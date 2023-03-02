@@ -8,13 +8,6 @@ end
 
 defmodule MyApp.LayoutView do
   use Phoenix.View, root: "test/fixtures/templates"
-  import Phoenix.HTML
-
-  def render("root.html", assigns) do
-    ~E"""
-    ROOTSTART[<%= @title %>]<%= @inner_content %>ROOTEND
-    """
-  end
 
   def default_title do
     "MyApp"
@@ -31,6 +24,8 @@ end
 
 defmodule MyApp.UserView do
   use Phoenix.View, root: "test/fixtures/templates", pattern: "**/*"
+
+  import Phoenix.Controller, only: [view_module: 1, view_template: 1]
 
   def escaped_title(title) do
     {:safe, Plug.HTML.html_escape(title)}
@@ -61,7 +56,7 @@ defmodule MyApp.UserView do
 
   def render("inner.html", assigns) do
     """
-    View module is #{assigns.view_module} and view template is #{assigns.view_template}
+    View module is #{view_module(assigns.conn)} and view template is #{view_template(assigns.conn)}
     """
   end
 

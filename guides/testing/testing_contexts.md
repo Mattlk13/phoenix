@@ -1,10 +1,10 @@
 # Testing Contexts
 
-> **Requirement**: This guide expects that you have gone through the introductory guides and got a Phoenix application up and running.
+> **Requirement**: This guide expects that you have gone through the [introductory guides](installation.html) and got a Phoenix application [up and running](up_and_running.html).
 
-> **Requirement**: This guide expects that you have gone through [the Introduction to Testing guide](testing.html).
+> **Requirement**: This guide expects that you have gone through the [Introduction to Testing guide](testing.html).
 
-> **Requirement**: This guide expects that you have gone through [the Context guide](context.html).
+> **Requirement**: This guide expects that you have gone through the [Contexts guide](contexts.html).
 
 At the end of the Introduction to Testing guide, we generated an HTML resource for posts using the following command:
 
@@ -12,7 +12,7 @@ At the end of the Introduction to Testing guide, we generated an HTML resource f
 $ mix phx.gen.html Blog Post posts title body:text
 ```
 
-This gave us a number of modules for free, including a Blog context and a Post schema, alongside their respective test files. As we have learned in the Context guide, the Blog context is simply a module with functions to a particular area of our business domain while Post schema maps to a particular table in our database.
+This gave us a number of modules for free, including a Blog context and a Post schema, alongside their respective test files. As we have learned in the Context guide, the Blog context is simply a module with functions to a particular area of our business domain, while Post schema maps to a particular table in our database.
 
 In this guide, we are going to explore the tests generated for our contexts and schemas. Before we do anything else, let's run `mix test` to make sure our test suite runs cleanly.
 
@@ -62,17 +62,17 @@ defmodule Hello.BlogTest do
     ...
 ```
 
-As the top of the file we import `Hello.DataCase`, which as we will see soon, it is similar to `HelloWeb.ConnCase`. While `HelloWeb.ConnCase` set up helpers for working with connections, which is useful when testing controllers and views, `Hello.DataCase` provides functionality for working with contexts and schemas.
+As the top of the file we import `Hello.DataCase`, which as we will see soon, it is similar to `HelloWeb.ConnCase`. While `HelloWeb.ConnCase` sets up helpers for working with connections, which is useful when testing controllers and views, `Hello.DataCase` provides functionality for working with contexts and schemas.
 
-Next we define an alias, so we can refer to `Hello.Blog` simply as `Blog`.
+Next, we define an alias, so we can refer to `Hello.Blog` simply as `Blog`.
 
-Then we start a `describe "posts"` block. A `describe` block is a feature in ExUnit that allows us to group similar tests. The reason why we have grouped all post related tests together is because contexts in Phoenix are capable of grouping multiple schemas together. For example, if you ran this command:
+Then we start a `describe "posts"` block. A `describe` block is a feature in ExUnit that allows us to group similar tests. The reason why we have grouped all post related tests together is because contexts in Phoenix are capable of grouping multiple schemas together. For example, if we ran this command:
 
 ```console
 $ mix phx.gen.html Blog Comment comments post_id:references:posts body:text
 ```
 
-We will would get a bunch of new functions in the `Hello.Blog` context plus a whole new `describe "comments"` block in our test file.
+We will get a bunch of new functions in the `Hello.Blog` context, plus a whole new `describe "comments"` block in our test file.
 
 The tests defined for our context are very straight-forward. They call the functions in our context and assert on their results. As you can see, some of those tests even create entries in the database:
 
@@ -106,12 +106,8 @@ defmodule Hello.DataCase do
   end
 
   setup tags do
-    :ok = Ecto.Adapters.SQL.Sandbox.checkout(Hello.Repo)
-
-    unless tags[:async] do
-      Ecto.Adapters.SQL.Sandbox.mode(Hello.Repo, {:shared, self()})
-    end
-
+    pid = Ecto.Adapters.SQL.Sandbox.start_owner!(Demo.Repo, shared: not tags[:async])
+    on_exit(fn -> Ecto.Adapters.SQL.Sandbox.stop_owner(pid) end)
     :ok
   end
 
@@ -137,13 +133,13 @@ Finally at the end of the of the `DataCase` module we can find a function named 
 
 ## Testing schemas
 
-When we generate our HTML Post resource, Phoenix generated a Blog context and a Post schema. It generated a test file for the context but no test file for the schema. However, this doesn't mean we don't need to test the schema, it just means we did not have to test the schema so far.
+When we generate our HTML Post resource, Phoenix generated a Blog context and a Post schema. It generated a test file for the context, but no test file for the schema. However, this doesn't mean we don't need to test the schema, it just means we did not have to test the schema so far.
 
 You may be wondering then: when do we test the context directly and when do we test the schema directly? The answer to this question is the same answer to the question of when do we add code to a context and when do we add it to the schema?
 
 The general guideline is to keep all side-effect free code in the schema. In other words, if you are simply working with data structures, schemas and changesets, put it in the schema. The context will typically have the code that creates and updates schemas and then write them to a database or an API.
 
-We'll be adding additional validations to the schema module, so that's a great opportunity to write some schema specific tests. Open up `lib/hello/blog/post.ex` and add the following validadtion to `def changeset`:
+We'll be adding additional validations to the schema module, so that's a great opportunity to write some schema specific tests. Open up `lib/hello/blog/post.ex` and add the following validation to `def changeset`:
 
 ```elixir
 def changeset(post, attrs) do
@@ -162,10 +158,10 @@ defmodule Hello.Blog.PostTest do
   alias Hello.Blog.Post
 
   test "title must be at least two characters long" do
-    changeset = Post.changeset(%User{}, %{title: "I"})
+    changeset = Post.changeset(%Post{}, %{title: "I"})
     assert %{title: ["should be at least 2 character(s)"]} = errors_on(changeset)
   end
 end
 ```
 
-And that's it. As our business domain grows, we have well defined places to test our contexts and schemas.
+And that's it. As our business domain grows, we have well-defined places to test our contexts and schemas.

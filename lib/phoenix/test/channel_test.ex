@@ -206,7 +206,7 @@ defmodule Phoenix.ChannelTest do
 
   """
   defmacro socket(socket_module) do
-    build_socket(socket_module, nil, [], __CALLER__)
+    socket(socket_module, nil, [], __CALLER__)
   end
 
   @doc """
@@ -218,22 +218,18 @@ defmodule Phoenix.ChannelTest do
 
   """
   defmacro socket(socket_module, socket_id, socket_assigns) do
-    build_socket(socket_module, socket_id, socket_assigns, __CALLER__)
+    socket(socket_module, socket_id, socket_assigns, __CALLER__)
   end
 
-  defp build_socket(socket, id, assigns, caller) do
+  defp socket(module, id, assigns, caller) do
     if endpoint = Module.get_attribute(caller.module, :endpoint) do
       quote do
-        %Socket{
-          assigns: Enum.into(unquote(assigns), %{}),
-          endpoint: unquote(endpoint),
-          handler: unquote(socket || first_socket!(endpoint)),
-          id: unquote(id),
-          pubsub_server: unquote(endpoint).config(:pubsub_server),
-          serializer: NoopSerializer,
-          transport: :channel_test,
-          transport_pid: self()
-        }
+        unquote(__MODULE__).__socket__(
+          unquote(module),
+          unquote(id),
+          unquote(assigns),
+          unquote(endpoint)
+        )
       end
     else
       raise "module attribute @endpoint not set for socket/2"
@@ -241,23 +237,52 @@ defmodule Phoenix.ChannelTest do
   end
 
   @doc false
-  defmacro socket() do
-    IO.warn "Phoenix.ChannelTest.socket/0 is deprecated, please call socket/1 instead"
-    build_socket(nil, nil, [], __CALLER__)
+  def __socket__(socket, id, assigns, endpoint) do
+    %Socket{
+      assigns: Enum.into(assigns, %{}),
+      endpoint: endpoint,
+      handler: socket || first_socket!(endpoint),
+      id: id,
+      pubsub_server: endpoint.config(:pubsub_server),
+      serializer: NoopSerializer,
+      transport: {__MODULE__, fetch_test_supervisor!()},
+      transport_pid: self()
+    }
   end
 
-  @doc false
-  defmacro socket(id, assigns) do
-    IO.warn "Phoenix.ChannelTest.socket/2 is deprecated, please call socket/3 instead"
-    build_socket(nil, id, assigns, __CALLER__)
-  end
-
-  # TODO: Remove this when Cowboy 1 adapter is removed
   defp first_socket!(endpoint) do
     case endpoint.__sockets__ do
       [] -> raise ArgumentError, "#{inspect endpoint} has no socket declaration"
       [{_, socket, _} | _] -> socket
     end
+  end
+
+  defp fetch_test_supervisor!() do
+    case ExUnit.OnExitHandler.get_supervisor(self()) do
+      {:ok, nil} ->
+        opts = [strategy: :one_for_one, max_restarts: 1_000_000, max_seconds: 1]
+        {:ok, sup} = Supervisor.start_link([], opts)
+        ExUnit.OnExitHandler.put_supervisor(self(), sup)
+        sup
+
+      {:ok, sup} ->
+        sup
+
+      :error ->
+        raise ArgumentError, "socket/1-3 can only be invoked from the test process"
+    end
+  end
+
+  @doc false
+  @deprecated "Phoenix.ChannelTest.socket/0 is deprecated, please call socket/1 instead"
+  defmacro socket() do
+    socket(nil, nil, [], __CALLER__)
+  end
+
+  @doc false
+  @deprecated "Phoenix.ChannelTest.socket/2 is deprecated, please call socket/3 instead"
+  defmacro socket(id, assigns) do
+    socket(nil, id, assigns, __CALLER__)
   end
 
   @doc """
@@ -280,7 +305,7 @@ defmodule Phoenix.ChannelTest do
   def __connect__(endpoint, handler, params, connect_info) do
     map = %{
       endpoint: endpoint,
-      transport: :channel_test,
+      transport: {__MODULE__, fetch_test_supervisor!()},
       options: [serializer: [{NoopSerializer, "~> 1.0.0"}]],
       params: __stringify__(params),
       connect_info: connect_info
@@ -384,7 +409,14 @@ defmodule Phoenix.ChannelTest do
         match_topic_to_channel!(socket, topic)
       end
 
-    case Server.join(socket, channel, message, opts) do
+    %Socket{transport: {__MODULE__, sup}} = socket
+
+    starter =
+      fn _, _, _, spec ->
+        Supervisor.start_child(sup, %{spec | id: make_ref()})
+      end
+
+    case Server.join(socket, channel, message, [starter: starter] ++ opts) do
       {:ok, reply, pid} ->
         Process.link(pid)
         {:ok, reply, Server.socket(pid)}
@@ -405,7 +437,7 @@ defmodule Phoenix.ChannelTest do
 
   """
   @spec push(Socket.t, String.t, map()) :: reference()
-  def push(socket, event, payload \\ %{}) do
+  def push(%Socket{} = socket, event, payload \\ %{}) do
     ref = make_ref()
     send(socket.channel_pid,
          %Message{event: event, topic: socket.topic, ref: ref, payload: __stringify__(payload)})
@@ -416,7 +448,7 @@ defmodule Phoenix.ChannelTest do
   Emulates the client leaving the channel.
   """
   @spec leave(Socket.t) :: reference()
-  def leave(socket) do
+  def leave(%Socket{} = socket) do
     push(socket, "phx_leave", %{})
   end
 
@@ -426,7 +458,7 @@ defmodule Phoenix.ChannelTest do
   Closing socket is synchronous and has a default timeout
   of 5000 milliseconds.
   """
-  def close(socket, timeout \\ 5000) do
+  def close(%Socket{} = socket, timeout \\ 5000) do
     Server.close(socket.channel_pid, timeout)
   end
 
@@ -442,7 +474,7 @@ defmodule Phoenix.ChannelTest do
       :ok
 
   """
-  def broadcast_from(socket, event, message) do
+  def broadcast_from(%Socket{} = socket, event, message) do
     %{pubsub_server: pubsub_server, topic: topic, transport_pid: transport_pid} = socket
     Server.broadcast_from pubsub_server, transport_pid, topic, event, message
   end
@@ -450,7 +482,7 @@ defmodule Phoenix.ChannelTest do
   @doc """
   Same as `broadcast_from/3`, but raises if broadcast fails.
   """
-  def broadcast_from!(socket, event, message) do
+  def broadcast_from!(%Socket{} = socket, event, message) do
     %{pubsub_server: pubsub_server, topic: topic, transport_pid: transport_pid} = socket
     Server.broadcast_from! pubsub_server, transport_pid, topic, event, message
   end

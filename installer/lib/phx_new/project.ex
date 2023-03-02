@@ -23,12 +23,14 @@ defmodule Phx.New.Project do
     app = opts[:app] || Path.basename(project_path)
     app_mod = Module.concat([opts[:module] || Macro.camelize(app)])
 
-    %Project{base_path: project_path,
-             app: app,
-             app_mod: app_mod,
-             root_app: app,
-             root_mod: app_mod,
-             opts: opts}
+    %Project{
+      base_path: project_path,
+      app: app,
+      app_mod: app_mod,
+      root_app: app,
+      root_mod: app_mod,
+      opts: opts
+    }
   end
 
   def ecto?(%Project{binding: binding}) do
@@ -43,8 +45,20 @@ defmodule Phx.New.Project do
     Keyword.fetch!(binding, :gettext)
   end
 
-  def webpack?(%Project{binding: binding}) do
-    Keyword.fetch!(binding, :webpack)
+  def live?(%Project{binding: binding}) do
+    Keyword.fetch!(binding, :live)
+  end
+
+  def dashboard?(%Project{binding: binding}) do
+    Keyword.fetch!(binding, :dashboard)
+  end
+
+  def assets?(%Project{binding: binding}) do
+    Keyword.fetch!(binding, :assets)
+  end
+
+  def mailer?(%Project{binding: binding}) do
+    Keyword.fetch!(binding, :mailer)
   end
 
   def verbose?(%Project{opts: opts}) do
@@ -53,7 +67,6 @@ defmodule Phx.New.Project do
 
   def join_path(%Project{} = project, location, path)
       when location in [:project, :app, :web] do
-
     project
     |> Map.fetch!(:"#{location}_path")
     |> Path.join(path)
@@ -62,7 +75,7 @@ defmodule Phx.New.Project do
 
   defp expand_path_with_bindings(path, %Project{} = project) do
     Regex.replace(Regex.recompile!(~r/:[a-zA-Z0-9_]+/), path, fn ":" <> key, _ ->
-        project |> Map.fetch!(:"#{key}") |> to_string()
+      project |> Map.fetch!(:"#{key}") |> to_string()
     end)
   end
 end

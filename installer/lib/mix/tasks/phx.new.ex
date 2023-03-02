@@ -4,7 +4,7 @@ defmodule Mix.Tasks.Phx.New do
 
   It expects the path of the project as an argument.
 
-      mix phx.new PATH [--module MODULE] [--app APP]
+      $ mix phx.new PATH [--module MODULE] [--app APP]
 
   A project at the given PATH will be created. The
   application name and module name will be retrieved
@@ -23,31 +23,40 @@ defmodule Mix.Tasks.Phx.New do
 
     * `--database` - specify the database adapter for Ecto. One of:
 
-        * `postgres` - https://github.com/elixir-ecto/postgrex
-        * `mysql` - https://github.com/elixir-ecto/myxql
+        * `postgres` - via https://github.com/elixir-ecto/postgrex
+        * `mysql` - via https://github.com/elixir-ecto/myxql
+        * `mssql` - via https://github.com/livehelpnow/tds
+        * `sqlite3` - via https://github.com/elixir-sqlite/ecto_sqlite3
 
       Please check the driver docs for more information
       and requirements. Defaults to "postgres".
 
-    * `--no-webpack` - do not generate webpack files
-      for static asset building. When choosing this
-      option, you will need to manually handle
-      JavaScript dependencies if building HTML apps
+    * `--no-assets` - do not generate the assets folder.
+      When choosing this option, you will need to manually
+      handle JavaScript/CSS if building HTML apps
 
-    * `--no-ecto` - do not generate Ecto files.
+    * `--no-ecto` - do not generate Ecto files
 
-    * `--no-html` - do not generate HTML views.
+    * `--no-html` - do not generate HTML views
 
-    * `--no-gettext` - do not generate gettext files.
+    * `--no-gettext` - do not generate gettext files
 
-    * `--binary-id` - use `binary_id` as primary key type
-      in Ecto schemas
+    * `--no-dashboard` - do not include Phoenix.LiveDashboard
+
+    * `--no-live` - comment out LiveView socket setup in assets/js/app.js.
+      Automatically disabled if --no-html is given
+
+    * `--no-mailer` - do not generate Swoosh mailer files
+
+    * `--binary-id` - use `binary_id` as primary key type in Ecto schemas
 
     * `--verbose` - use verbose output
 
+    * `-v`, `--version` - prints the Phoenix installer version
+
   When passing the `--no-ecto` flag, Phoenix generators such as
-  `phx.gen.html`, `phx.gen.json` and `phx.gen.context` may no
-  longer work as expected as they generate context files that rely
+  `phx.gen.html`, `phx.gen.json`, `phx.gen.live`, and `phx.gen.context`
+  may no longer work as expected as they generate context files that rely
   on Ecto for the database access. In those cases, you can pass the
   `--no-context` flag to generate most of the HTML and JSON files
   but skip the context, allowing you to fill in the blanks as desired.
@@ -56,35 +65,39 @@ defmodule Mix.Tasks.Phx.New do
   `phx.gen.html` will no longer work, as important HTML components
   will be missing.
 
+  ## Installation
+
+  `mix phx.new` by default prompts you to fetch and install your
+  dependencies. You can enable this behaviour by passing the
+  `--install` flag or disable it with the `--no-install` flag.
+
   ## Examples
 
-      mix phx.new hello_world
+      $ mix phx.new hello_world
 
   Is equivalent to:
 
-      mix phx.new hello_world --module HelloWorld
+      $ mix phx.new hello_world --module HelloWorld
 
   Or without the HTML and JS bits (useful for APIs):
 
-      mix phx.new ~/Workspace/hello_world --no-html --no-webpack
+      $ mix phx.new ~/Workspace/hello_world --no-html --no-assets
 
   As an umbrella:
 
-      mix phx.new hello --umbrella
+      $ mix phx.new hello --umbrella
 
   Would generate the following directory structure and modules:
 
-      hello_umbrella/   Hello.Umbrella
-        apps/
-          hello/        Hello
-          hello_web/    HelloWeb
+  ```text
+  hello_umbrella/   Hello.Umbrella
+    apps/
+      hello/        Hello
+      hello_web/    HelloWeb
+  ```
 
   You can read more about umbrella projects using the
-  official [Elixir guide](http://elixir-lang.org/getting-started/mix-otp/dependencies-and-umbrella-apps.html#umbrella-projects)
-
-  To print the Phoenix installer version, pass `-v` or `--version`, for example:
-
-      mix phx.new -v
+  official [Elixir guide](https://elixir-lang.org/getting-started/mix-otp/dependencies-and-umbrella-apps.html#umbrella-projects)
   """
   use Mix.Task
   alias Phx.New.{Generator, Project, Single, Umbrella, Web, Ecto}
@@ -92,13 +105,16 @@ defmodule Mix.Tasks.Phx.New do
   @version Mix.Project.config()[:version]
   @shortdoc "Creates a new Phoenix v#{@version} application"
 
-  @switches [dev: :boolean, webpack: :boolean, ecto: :boolean,
+  @switches [dev: :boolean, assets: :boolean, ecto: :boolean,
              app: :string, module: :string, web_module: :string,
              database: :string, binary_id: :boolean, html: :boolean,
-             gettext: :boolean, umbrella: :boolean, verbose: :boolean]
+             gettext: :boolean, umbrella: :boolean, verbose: :boolean,
+             live: :boolean, dashboard: :boolean, install: :boolean,
+             prefix: :string, mailer: :boolean]
 
+  @impl true
   def run([version]) when version in ~w(-v --version) do
-    Mix.shell().info("Phoenix v#{@version}")
+    Mix.shell().info("Phoenix installer v#{@version}")
   end
 
   def run(argv) do
@@ -113,6 +129,7 @@ defmodule Mix.Tasks.Phx.New do
     end
   end
 
+  @doc false
   def run(argv, generator, path) do
     elixir_version_check!()
     case parse_opts(argv) do
@@ -121,7 +138,7 @@ defmodule Mix.Tasks.Phx.New do
     end
   end
 
-  def generate(base_path, generator, path, opts) do
+  defp generate(base_path, generator, path, opts) do
     base_path
     |> Project.new(opts)
     |> generator.prepare_project()
@@ -140,31 +157,57 @@ defmodule Mix.Tasks.Phx.New do
     project
   end
 
-  defp prompt_to_install_deps(%Project{} = project, generator, path) do
-    path = Map.fetch!(project, path)
-    install? = Mix.shell().yes?("\nFetch and install dependencies?")
+  defp prompt_to_install_deps(%Project{} = project, generator, path_key) do
+    path = Map.fetch!(project, path_key)
+
+    install? =
+      Keyword.get_lazy(project.opts, :install, fn ->
+        Mix.shell().yes?("\nFetch and install dependencies?")
+      end)
+
     cd_step = ["$ cd #{relative_app_path(path)}"]
 
     maybe_cd(path, fn ->
       mix_step = install_mix(project, install?)
 
-      compile =
-        case mix_step do
-          [] -> Task.async(fn -> rebar_available?() && cmd(project, "mix deps.compile") end)
-          _  -> Task.async(fn -> :ok end)
+      if mix_step == [] do
+        tasks =
+          if Keyword.get(project.opts, :assets, true) do
+            Mix.shell().info([:green, "* running ", :reset, "mix assets.setup"])
+
+            # First compile only esbuild and tailwind so we can install in parallel
+            cmd(project, "mix deps.compile castore esbuild tailwind", false)
+
+            Enum.map(
+              ["mix do loadpaths --no-compile + tailwind.install", "mix do loadpaths --no-compile + esbuild.install"],
+              &Task.async(fn -> cmd(project, &1, false) end)
+            )
+          else
+            []
+          end
+
+        if rebar_available?() do
+          cmd(project, "mix deps.compile")
         end
 
-      webpack_step = install_webpack(install?, project)
-      Task.await(compile, :infinity)
-
-      if Project.webpack?(project) and !System.find_executable("npm") do
-        print_webpack_info(project, generator)
+        Task.await_many(tasks, :infinity)
       end
 
-      print_missing_steps(cd_step ++ mix_step ++ webpack_step)
+      print_missing_steps(cd_step ++ mix_step)
 
       if Project.ecto?(project) do
         print_ecto_info(generator)
+      end
+
+      if path_key == :web_path do
+        Mix.shell().info("""
+        Your web app requires a PubSub server to be running.
+        The PubSub server is typically defined in a `mix phx.new.ecto` app.
+        If you don't plan to define an Ecto app, you must explicitly start
+        the PubSub in your supervision tree as:
+
+            {Phoenix.PubSub, name: #{inspect(project.app_mod)}.PubSub}
+        """)
       end
 
       print_mix_info(generator)
@@ -183,36 +226,21 @@ defmodule Mix.Tasks.Phx.New do
   defp switch_to_string({name, nil}), do: name
   defp switch_to_string({name, val}), do: name <> "=" <> val
 
-  defp install_webpack(install?, project) do
-    assets_path = Path.join(project.web_path || project.project_path, "assets")
-    webpack_config = Path.join(assets_path, "webpack.config.js")
-
-    maybe_cmd(project, "cd #{relative_app_path(assets_path)} && npm install && node node_modules/webpack/bin/webpack.js --mode development",
-              File.exists?(webpack_config), install? && System.find_executable("npm"))
-  end
-
   defp install_mix(project, install?) do
-    maybe_cmd(project, "mix deps.get", true, install? && hex_available?())
+    if install? && hex_available?() do
+      cmd(project, "mix deps.get")
+    else
+      ["$ mix deps.get"]
+    end
   end
 
+  # TODO: Elixir v1.15 automatically installs Hex/Rebar if missing, so we can simplify this.
   defp hex_available? do
     Code.ensure_loaded?(Hex)
   end
 
   defp rebar_available? do
-    Mix.Rebar.rebar_cmd(:rebar) && Mix.Rebar.rebar_cmd(:rebar3)
-  end
-
-  defp print_webpack_info(_project, _gen) do
-    Mix.shell().info """
-    Phoenix uses an optional assets build tool called webpack
-    that requires node.js and npm. Installation instructions for
-    node.js, which includes npm, can be found at http://nodejs.org.
-
-    The command listed next expect that you have npm available.
-    If you don't want webpack, you can re-run this generator
-    with the --no-webpack option.
-    """
+    Mix.Rebar.rebar_cmd(:rebar3)
   end
 
   defp print_missing_steps(steps) do
@@ -261,24 +289,14 @@ defmodule Mix.Tasks.Phx.New do
 
   ## Helpers
 
-  defp maybe_cmd(project, cmd, should_run?, can_run?) do
-    cond do
-      should_run? && can_run? ->
-        cmd(project, cmd)
-      should_run? ->
-        ["$ #{cmd}"]
-      true ->
-        []
+  defp cmd(%Project{} = project, cmd, log? \\ true) do
+    if log? do
+      Mix.shell().info [:green, "* running ", :reset, cmd]
     end
-  end
 
-  defp cmd(%Project{} = project, cmd) do
-    Mix.shell().info [:green, "* running ", :reset, cmd]
     case Mix.shell().cmd(cmd, cmd_opts(project)) do
-      0 ->
-        []
-      _ ->
-        ["$ #{cmd}"]
+      0 -> []
+      _ -> ["$ #{cmd}"]
     end
   end
 
@@ -332,8 +350,8 @@ defmodule Mix.Tasks.Phx.New do
   end
 
   defp elixir_version_check! do
-    unless Version.match?(System.version(), "~> 1.6") do
-      Mix.raise "Phoenix v#{@version} requires at least Elixir v1.6.\n " <>
+    unless Version.match?(System.version(), "~> 1.14") do
+      Mix.raise "Phoenix v#{@version} requires at least Elixir v1.14\n " <>
                 "You have #{System.version()}. Please update accordingly"
     end
   end

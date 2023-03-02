@@ -16,16 +16,18 @@ defmodule Phoenix.Channel.Server do
   """
   @spec join(Socket.t(), module, Message.t(), keyword) :: {:ok, term, pid} | {:error, term}
   def join(socket, channel, message, opts) do
-    %{topic: topic, payload: payload, ref: join_ref} = message
-    assigns = Map.merge(socket.assigns, Keyword.get(opts, :assigns, %{}))
-    socket = %{socket | topic: topic, channel: channel, join_ref: join_ref, assigns: assigns}
+    %{topic: topic, payload: payload, ref: ref, join_ref: join_ref} = message
 
+    starter = opts[:starter] || &PoolSupervisor.start_child/4
+    assigns = Map.merge(socket.assigns, Keyword.get(opts, :assigns, %{}))
+    socket = %{socket | topic: topic, channel: channel, join_ref: join_ref || ref, assigns: assigns}
     ref = make_ref()
     from = {self(), ref}
-    child_spec = channel.child_spec({payload, from, socket})
+    child_spec = channel.child_spec({socket.endpoint, from})
 
-    case PoolSupervisor.start_child(socket.endpoint, socket.handler, from, child_spec) do
+    case starter.(socket.endpoint, socket.handler, from, child_spec) do
       {:ok, pid} ->
+        send(pid, {Phoenix.Channel, payload, from, socket})
         mon_ref = Process.monitor(pid)
 
         receive do
@@ -135,7 +137,7 @@ defmodule Phoenix.Channel.Server do
   The message is encoded as `Phoenix.Socket.Broadcast`.
   """
   def broadcast(pubsub_server, topic, event, payload)
-      when is_binary(topic) and is_binary(event) and is_map(payload) do
+      when is_binary(topic) and is_binary(event) do
     broadcast = %Broadcast{
       topic: topic,
       event: event,
@@ -152,7 +154,7 @@ defmodule Phoenix.Channel.Server do
   Raises in case of crashes.
   """
   def broadcast!(pubsub_server, topic, event, payload)
-      when is_binary(topic) and is_binary(event) and is_map(payload) do
+      when is_binary(topic) and is_binary(event) do
     broadcast = %Broadcast{
       topic: topic,
       event: event,
@@ -169,7 +171,7 @@ defmodule Phoenix.Channel.Server do
   The message is encoded as `Phoenix.Socket.Broadcast`.
   """
   def broadcast_from(pubsub_server, from, topic, event, payload)
-      when is_binary(topic) and is_binary(event) and is_map(payload) do
+      when is_binary(topic) and is_binary(event) do
     broadcast = %Broadcast{
       topic: topic,
       event: event,
@@ -186,7 +188,7 @@ defmodule Phoenix.Channel.Server do
   Raises in case of crashes.
   """
   def broadcast_from!(pubsub_server, from, topic, event, payload)
-      when is_binary(topic) and is_binary(event) and is_map(payload) do
+      when is_binary(topic) and is_binary(event) do
     broadcast = %Broadcast{
       topic: topic,
       event: event,
@@ -203,7 +205,7 @@ defmodule Phoenix.Channel.Server do
   The message is encoded as `Phoenix.Socket.Broadcast`.
   """
   def local_broadcast(pubsub_server, topic, event, payload)
-      when is_binary(topic) and is_binary(event) and is_map(payload) do
+      when is_binary(topic) and is_binary(event) do
     broadcast = %Broadcast{
       topic: topic,
       event: event,
@@ -220,7 +222,7 @@ defmodule Phoenix.Channel.Server do
   The message is encoded as `Phoenix.Socket.Broadcast`.
   """
   def local_broadcast_from(pubsub_server, from, topic, event, payload)
-      when is_binary(topic) and is_binary(event) and is_map(payload) do
+      when is_binary(topic) and is_binary(event) do
     broadcast = %Broadcast{
       topic: topic,
       event: event,
@@ -234,9 +236,9 @@ defmodule Phoenix.Channel.Server do
   Pushes a message with the given topic, event and payload
   to the given process.
   """
-  def push(pid, topic, event, payload, serializer)
-      when is_binary(topic) and is_binary(event) and is_map(payload) do
-    message = %Message{topic: topic, event: event, payload: payload}
+  def push(pid, join_ref, topic, event, payload, serializer)
+      when is_binary(topic) and is_binary(event) do
+    message = %Message{join_ref: join_ref, topic: topic, event: event, payload: payload}
     send(pid, serializer.encode!(message))
     :ok
   end
@@ -245,7 +247,7 @@ defmodule Phoenix.Channel.Server do
   Replies to a given ref to the transport process.
   """
   def reply(pid, join_ref, ref, topic, {status, payload}, serializer)
-      when is_binary(topic) and is_map(payload) do
+      when is_binary(topic) do
     reply = %Reply{topic: topic, join_ref: join_ref, ref: ref, status: status, payload: payload}
     send(pid, serializer.encode!(reply))
     :ok
@@ -254,10 +256,8 @@ defmodule Phoenix.Channel.Server do
   ## Callbacks
 
   @doc false
-  def init({auth_payload, from, socket}) do
-    # TODO: Use handle_continue when we support Erlang/OTP 21+.
-    send(self(), {:join, __MODULE__})
-    {:ok, {auth_payload, from, socket}}
+  def init({_endpoint, {pid, _}}) do
+    {:ok, Process.monitor(pid)}
   end
 
   @doc false
@@ -285,7 +285,8 @@ defmodule Phoenix.Channel.Server do
   end
 
   @doc false
-  def handle_info({:join, __MODULE__}, {auth_payload, {pid, _} = from, socket}) do
+  def handle_info({Phoenix.Channel, auth_payload, {pid, _} = from, socket}, ref) do
+    Process.demonitor(ref)
     %{channel: channel, topic: topic, private: private} = socket
     Process.put(:"$callers", [pid])
 
@@ -329,6 +330,10 @@ defmodule Phoenix.Channel.Server do
     |> handle_result(:handle_out)
   end
 
+  def handle_info({:DOWN, ref, _, _, reason}, ref) do
+    {:stop, reason, ref}
+  end
+
   def handle_info({:DOWN, _, _, transport_pid, reason}, %{transport_pid: transport_pid} = socket) do
     reason = if reason == :normal, do: {:shutdown, :closed}, else: reason
     {:stop, reason, socket}
@@ -340,7 +345,7 @@ defmodule Phoenix.Channel.Server do
       |> socket.channel.handle_info(socket)
       |> handle_result(:handle_info)
     else
-      warn_unexpected_msg(:handle_info, 2, msg)
+      warn_unexpected_msg(:handle_info, 2, msg, channel)
       {:noreply, socket}
     end
   end
@@ -395,8 +400,23 @@ defmodule Phoenix.Channel.Server do
 
   defp init_join(socket, channel, topic) do
     %{transport_pid: transport_pid, serializer: serializer, pubsub_server: pubsub_server} = socket
-    Process.monitor(transport_pid)
 
+    unless pubsub_server do
+      raise """
+      The :pubsub_server was not configured for endpoint #{inspect(socket.endpoint)}.
+      Make sure to start a PubSub process in your application supervision tree:
+
+          {Phoenix.PubSub, [name: YOURAPP.PubSub, adapter: Phoenix.PubSub.PG2]}
+
+      And then add it to your endpoint config:
+
+          config :YOURAPP, YOURAPPWeb.Endpoint,
+            # ...
+            pubsub_server: YOURAPP.PubSub
+      """
+    end
+
+    Process.monitor(transport_pid)
     fastlane = {:fastlane, transport_pid, serializer, channel.__intercepts__()}
     PubSub.subscribe(pubsub_server, topic, metadata: fastlane)
 
@@ -481,7 +501,7 @@ defmodule Phoenix.Channel.Server do
     handle_result(other, :handle_in)
   end
 
-  defp handle_reply(socket, {status, payload}) when is_atom(status) and is_map(payload) do
+  defp handle_reply(socket, {status, payload}) when is_atom(status) do
     reply(
       socket.transport_pid,
       socket.join_ref,
@@ -513,7 +533,7 @@ defmodule Phoenix.Channel.Server do
     """
   end
 
-  defp warn_unexpected_msg(fun, arity, msg) do
+  defp warn_unexpected_msg(fun, arity, msg, channel) do
     proc =
       case Process.info(self(), :registered_name) do
         {_, []} -> self()
@@ -522,7 +542,7 @@ defmodule Phoenix.Channel.Server do
 
     :error_logger.warning_msg(
       ~c"~p ~p received unexpected message in #{fun}/#{arity}: ~p~n",
-      [__MODULE__, proc, msg]
+      [channel, proc, msg]
     )
   end
 end
